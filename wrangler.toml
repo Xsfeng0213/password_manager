@@ -5,4 +5,4 @@ pages_build_output_dir = "dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "password_manager"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "5de0be9e-11dc-4705-8577-a6a431b8e24b"
