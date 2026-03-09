@@ -21,18 +21,18 @@ function isNonEmptyString(value: unknown): value is string {
 export const onRequestPut: PagesFunction<Env> = async (context) => {
   const id = context.params.id;
   if (!isNonEmptyString(id)) {
-    return jsonError("Missing entry id.", 400);
+    return jsonError("缺少条目 id。", 400);
   }
 
   let payload: unknown;
   try {
     payload = await context.request.json();
   } catch {
-    return jsonError("Invalid JSON body.", 400);
+    return jsonError("请求体不是合法 JSON。", 400);
   }
 
   if (!payload || typeof payload !== "object") {
-    return jsonError("Request body must be a JSON object.", 400);
+    return jsonError("请求体必须是 JSON 对象。", 400);
   }
 
   const body = payload as Partial<UpdateEntryBody>;
@@ -41,7 +41,7 @@ export const onRequestPut: PagesFunction<Env> = async (context) => {
     !isNonEmptyString(body.encrypted_blob) ||
     !isNonEmptyString(body.iv)
   ) {
-    return jsonError("Missing required fields: site_name, encrypted_blob, iv.", 400);
+    return jsonError("缺少必要字段：site_name、encrypted_blob、iv。", 400);
   }
 
   const now = new Date().toISOString();
@@ -59,14 +59,14 @@ export const onRequestPut: PagesFunction<Env> = async (context) => {
 
     return Response.json({ ok: true }, { status: 200 });
   } catch {
-    return jsonError("Failed to update entry.", 500);
+    return jsonError("更新条目失败。", 500);
   }
 };
 
 export const onRequestDelete: PagesFunction<Env> = async (context) => {
   const id = context.params.id;
   if (!isNonEmptyString(id)) {
-    return jsonError("Missing entry id.", 400);
+    return jsonError("缺少条目 id。", 400);
   }
 
   try {
@@ -75,6 +75,6 @@ export const onRequestDelete: PagesFunction<Env> = async (context) => {
     await context.env.DB.prepare(`DELETE FROM entries WHERE id = ?`).bind(id).run();
     return Response.json({ ok: true }, { status: 200 });
   } catch {
-    return jsonError("Failed to delete entry.", 500);
+    return jsonError("删除条目失败。", 500);
   }
 };

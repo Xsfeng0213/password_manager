@@ -2,9 +2,10 @@ export type DecryptedEntry = {
   id: string;
   siteName: string;
   username: string;
-  email: string;
+  account: string;
   password: string;
-  note: string;
+  remark: string;
+  category: string;
   createdAt: string;
   updatedAt: string;
 };

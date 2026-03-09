@@ -40,7 +40,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
     return Response.json(Array.isArray(results) ? results : []);
   } catch {
-    return jsonError("Failed to fetch entries from database.", 500);
+    return jsonError("数据库查询条目失败。", 500);
   }
 };
 
@@ -49,11 +49,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   try {
     payload = await context.request.json();
   } catch {
-    return jsonError("Invalid JSON body.", 400);
+    return jsonError("请求体不是合法 JSON。", 400);
   }
 
   if (!payload || typeof payload !== "object") {
-    return jsonError("Request body must be a JSON object.", 400);
+    return jsonError("请求体必须是 JSON 对象。", 400);
   }
 
   const body = payload as Partial<CreateEntryBody>;
@@ -63,7 +63,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     !isNonEmptyString(body.encrypted_blob) ||
     !isNonEmptyString(body.iv)
   ) {
-    return jsonError("Missing required fields: id, site_name, encrypted_blob, iv.", 400);
+    return jsonError("缺少必要字段：id、site_name、encrypted_blob、iv。", 400);
   }
 
   const now = new Date().toISOString();
@@ -80,6 +80,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     return Response.json({ ok: true }, { status: 201 });
   } catch {
-    return jsonError("Failed to create entry.", 500);
+    return jsonError("创建条目失败。", 500);
   }
 };

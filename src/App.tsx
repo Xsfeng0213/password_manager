@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createEntry, deleteEntry, fetchEntries, updateEntry } from "./api";
 import { decryptJson, deriveKey, encryptJson } from "./crypto";
 import type { DecryptedEntry, EntryRecord } from "./types";
@@ -7,24 +7,33 @@ import { generateId } from "./utils";
 type FormState = {
   siteName: string;
   username: string;
-  email: string;
+  account: string;
   password: string;
-  note: string;
+  remark: string;
+  category: string;
 };
 
 type DecryptedPayload = {
-  username: string;
-  email: string;
-  password: string;
-  note: string;
+  username?: string;
+  account?: string;
+  email?: string;
+  password?: string;
+  remark?: string;
+  note?: string;
+  category?: string;
 };
+
+const DEFAULT_CATEGORY = "默认分类";
+const CATEGORY_STORAGE_KEY = "pm_categories";
+const PAGE_SIZE_OPTIONS = [5, 10, 20] as const;
 
 const emptyForm: FormState = {
   siteName: "",
   username: "",
-  email: "",
+  account: "",
   password: "",
-  note: ""
+  remark: "",
+  category: DEFAULT_CATEGORY
 };
 
 function EyeIcon({ open }: { open: boolean }) {
@@ -103,7 +112,42 @@ function formatTimestamp(value: string): string {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return date.toLocaleString();
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function normalizeCategory(value: string): string {
+  return value.trim();
+}
+
+function normalizeCategoryList(values: string[]): string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+
+  for (const raw of values) {
+    const value = normalizeCategory(raw);
+    if (!value || value === DEFAULT_CATEGORY || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    cleaned.push(value);
+  }
+
+  return [DEFAULT_CATEGORY, ...cleaned];
+}
+
+function copyTextLegacy(value: string): boolean {
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+  textArea.style.pointerEvents = "none";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textArea);
+  return copied;
 }
 
 async function copyTextToClipboard(value: string): Promise<void> {
@@ -112,22 +156,8 @@ async function copyTextToClipboard(value: string): Promise<void> {
     return;
   }
 
-  const textArea = document.createElement("textarea");
-  textArea.value = value;
-  textArea.setAttribute("readonly", "true");
-  textArea.style.position = "fixed";
-  textArea.style.opacity = "0";
-  textArea.style.pointerEvents = "none";
-
-  document.body.appendChild(textArea);
-  textArea.focus();
-  textArea.select();
-
-  const copied = document.execCommand("copy");
-  document.body.removeChild(textArea);
-
-  if (!copied) {
-    throw new Error("Clipboard copy failed.");
+  if (!copyTextLegacy(value)) {
+    throw new Error("copy failed");
   }
 }
 
@@ -136,6 +166,8 @@ export default function App() {
   const [key, setKey] = useState<CryptoKey | null>(null);
   const [records, setRecords] = useState<EntryRecord[]>([]);
   const [entries, setEntries] = useState<DecryptedEntry[]>([]);
+  const [categories, setCategories] = useState<string[]>([DEFAULT_CATEGORY]);
+  const [newCategoryName, setNewCategoryName] = useState("");
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -146,10 +178,31 @@ export default function App() {
   const [successMessage, setSuccessMessage] = useState("");
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [currentPage, setCurrentPage] = useState(1);
+  const entryListRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void loadRecords();
+    const stored = localStorage.getItem(CATEGORY_STORAGE_KEY);
+    if (!stored) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(stored) as unknown;
+      if (Array.isArray(parsed)) {
+        const normalized = normalizeCategoryList(parsed.filter((item): item is string => typeof item === "string"));
+        setCategories(normalized);
+      }
+    } catch {
+      setCategories([DEFAULT_CATEGORY]);
+    }
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(categories));
+  }, [categories]);
 
   useEffect(() => {
     if (!key) {
@@ -165,8 +218,7 @@ export default function App() {
     if (!successMessage) {
       return;
     }
-
-    const timer = window.setTimeout(() => setSuccessMessage(""), 2000);
+    const timer = window.setTimeout(() => setSuccessMessage(""), 2200);
     return () => window.clearTimeout(timer);
   }, [successMessage]);
 
@@ -174,8 +226,7 @@ export default function App() {
     if (!copiedId) {
       return;
     }
-
-    const timer = window.setTimeout(() => setCopiedId((current) => (current ? null : current)), 1200);
+    const timer = window.setTimeout(() => setCopiedId(null), 1200);
     return () => window.clearTimeout(timer);
   }, [copiedId]);
 
@@ -197,6 +248,43 @@ export default function App() {
     });
   }, [entries]);
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, pageSize]);
+
+  const filtered = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) {
+      return entries;
+    }
+
+    return entries.filter((entry) =>
+      [entry.siteName, entry.username, entry.account, entry.remark, entry.category]
+        .join(" ")
+        .toLowerCase()
+        .includes(keyword)
+    );
+  }, [entries, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  useEffect(() => {
+    setCurrentPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
+
+  const pagedEntries = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, currentPage, pageSize]);
+
+  useEffect(() => {
+    if (!entryListRef.current) {
+      return;
+    }
+
+    entryListRef.current.scrollTo({ top: 0, behavior: "smooth" });
+  }, [currentPage]);
+
   async function loadRecords() {
     setLoading(true);
     try {
@@ -204,7 +292,7 @@ export default function App() {
       setRecords(data);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load entries.");
+      setError(err instanceof Error ? err.message : "加载条目失败。");
     } finally {
       setLoading(false);
     }
@@ -214,14 +302,16 @@ export default function App() {
     const settled = await Promise.allSettled(
       source.map(async (item) => {
         const payload = await decryptJson<DecryptedPayload>(cryptoKey, item.encrypted_blob, item.iv);
+        const category = normalizeCategory(payload.category ?? "") || DEFAULT_CATEGORY;
 
         return {
           id: item.id,
           siteName: item.site_name,
           username: payload.username ?? "",
-          email: payload.email ?? "",
+          account: payload.account ?? payload.email ?? "",
           password: payload.password ?? "",
-          note: payload.note ?? "",
+          remark: payload.remark ?? payload.note ?? "",
+          category,
           createdAt: item.created_at,
           updatedAt: item.updated_at
         } satisfies DecryptedEntry;
@@ -229,11 +319,13 @@ export default function App() {
     );
 
     const decrypted: DecryptedEntry[] = [];
+    const discoveredCategories: string[] = [];
     let failedCount = 0;
 
     for (const result of settled) {
       if (result.status === "fulfilled") {
         decrypted.push(result.value);
+        discoveredCategories.push(result.value.category);
       } else {
         failedCount += 1;
       }
@@ -241,6 +333,7 @@ export default function App() {
 
     decrypted.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     setEntries(decrypted);
+    setCategories((current) => normalizeCategoryList([...current, ...discoveredCategories]));
 
     if (source.length === 0) {
       setError("");
@@ -256,17 +349,17 @@ export default function App() {
 
     if (decrypted.length === 0) {
       setWarning("");
-      setError("Unable to decrypt entries. Check the master password and local salt.");
+      setError("无法解密任何条目，请检查主密码或本地 salt。");
       return;
     }
 
     setError("");
-    setWarning(`Skipped ${failedCount} record${failedCount === 1 ? "" : "s"} that failed to decrypt.`);
+    setWarning(`有 ${failedCount} 条数据解密失败，已自动跳过。`);
   }
 
   async function handleUnlock() {
     if (!masterPassword.trim()) {
-      setError("Please enter a master password.");
+      setError("请先输入主密码。");
       return;
     }
 
@@ -276,33 +369,66 @@ export default function App() {
       setKey(derived);
       setError("");
       setWarning("");
-      setSuccessMessage("Vault unlocked.");
+      setSuccessMessage("已成功解锁保险箱。");
     } catch {
-      setError("Failed to unlock vault.");
+      setError("解锁失败，请重试。");
     } finally {
       setUnlocking(false);
     }
   }
 
+  function addCategory(rawName: string): string | null {
+    const name = normalizeCategory(rawName);
+    if (!name) {
+      return null;
+    }
+
+    setCategories((current) => {
+      if (current.includes(name)) {
+        return current;
+      }
+      return normalizeCategoryList([...current, name]);
+    });
+
+    return name;
+  }
+
+  function handleCreateCategory() {
+    const created = addCategory(newCategoryName);
+    if (!created) {
+      setError("分类名称不能为空。");
+      return;
+    }
+
+    setForm((current) => ({ ...current, category: created }));
+    setNewCategoryName("");
+    setError("");
+    setSuccessMessage(`分类「${created}」已保存。`);
+  }
+
   async function handleSubmit() {
     if (!key) {
-      setError("Unlock the vault before saving.");
+      setError("请先解锁后再保存条目。");
       return;
     }
 
     const siteName = form.siteName.trim();
     if (!siteName) {
-      setError("Site name is required.");
+      setError("网站名称不能为空。");
       return;
     }
+
+    const category = normalizeCategory(form.category) || DEFAULT_CATEGORY;
+    addCategory(category);
 
     try {
       const id = editingId ?? generateId();
       const encrypted = await encryptJson(key, {
         username: form.username.trim(),
-        email: form.email.trim(),
+        account: form.account.trim(),
         password: form.password,
-        note: form.note.trim()
+        remark: form.remark.trim(),
+        category
       });
 
       if (editingId) {
@@ -311,7 +437,7 @@ export default function App() {
           encrypted_blob: encrypted.ciphertext,
           iv: encrypted.iv
         });
-        setSuccessMessage("Entry updated.");
+        setSuccessMessage("条目已更新。");
       } else {
         await createEntry({
           id,
@@ -319,7 +445,7 @@ export default function App() {
           encrypted_blob: encrypted.ciphertext,
           iv: encrypted.iv
         });
-        setSuccessMessage("Entry added.");
+        setSuccessMessage("条目已添加。");
       }
 
       setForm(emptyForm);
@@ -329,25 +455,27 @@ export default function App() {
       setWarning("");
       await loadRecords();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save entry.");
+      setError(err instanceof Error ? err.message : "保存条目失败。");
     }
   }
 
   function startEdit(entry: DecryptedEntry) {
+    addCategory(entry.category);
     setEditingId(entry.id);
     setForm({
       siteName: entry.siteName,
       username: entry.username,
-      email: entry.email,
+      account: entry.account,
       password: entry.password,
-      note: entry.note
+      remark: entry.remark,
+      category: entry.category
     });
     setSuccessMessage("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function handleDelete(id: string) {
-    const confirmed = window.confirm("Delete this entry?");
+    const confirmed = window.confirm("确认删除这条记录吗？");
     if (!confirmed) {
       return;
     }
@@ -360,15 +488,15 @@ export default function App() {
         return next;
       });
       await loadRecords();
-      setSuccessMessage("Entry deleted.");
+      setSuccessMessage("条目已删除。");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete entry.");
+      setError(err instanceof Error ? err.message : "删除条目失败。");
     }
   }
 
   async function handleCopy(password: string, id: string) {
     if (!password) {
-      setError("This entry has no password to copy.");
+      setError("该条目没有可复制的密码。");
       return;
     }
 
@@ -376,47 +504,37 @@ export default function App() {
       await copyTextToClipboard(password);
       setCopiedId(id);
       setError("");
-      setSuccessMessage("Password copied.");
+      setSuccessMessage("密码已复制。");
     } catch {
-      setError("Clipboard permission denied or unavailable.");
+      setError("复制失败，请检查浏览器剪贴板权限。");
     }
   }
 
-  const filtered = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) {
-      return entries;
-    }
-
-    return entries.filter((entry) =>
-      [entry.siteName, entry.username, entry.email, entry.note].join(" ").toLowerCase().includes(keyword)
-    );
-  }, [entries, search]);
-
   const savedPasswords = entries.filter((entry) => entry.password.trim()).length;
+  const pageStart = filtered.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const pageEnd = Math.min(currentPage * pageSize, filtered.length);
 
   return (
     <div className="app-shell">
       <div className="bg-shape bg-shape-a" />
       <div className="bg-shape bg-shape-b" />
+      <div className="bg-shape bg-shape-c" />
+
       <div className="layout">
         <header className="card hero">
           <div className="hero-copy">
-            <span className="tag">Client-side encrypted vault</span>
-            <h1>Password Manager</h1>
-            <p>
-              Data is encrypted in the browser before upload. Passwords are masked by default, and each entry can be
-              toggled or copied with one click.
-            </p>
+            <span className="tag">浏览器端加密密码保险箱</span>
+            <h1>个人密码管理器</h1>
+            <p>默认掩码显示密码，支持一键显隐与复制。分类可自定义并本地持久保存，下次打开继续可用。</p>
           </div>
 
           <div className="stat-grid">
             <div className="stat-card">
-              <span>Total Entries</span>
+              <span>总条目</span>
               <strong>{entries.length}</strong>
             </div>
             <div className="stat-card">
-              <span>Saved Passwords</span>
+              <span>已保存密码</span>
               <strong>{savedPasswords}</strong>
             </div>
           </div>
@@ -424,18 +542,18 @@ export default function App() {
 
         <section className="card unlock-card">
           <div>
-            <h2>Unlock Vault</h2>
-            <p>The master password is only used locally for encryption and decryption.</p>
+            <h2>解锁保险箱</h2>
+            <p>主密码仅在本地用于加解密，不会明文上传。</p>
           </div>
           <div className="unlock-actions">
             <input
               type="password"
-              placeholder="Enter master password"
+              placeholder="输入主密码"
               value={masterPassword}
               onChange={(event) => setMasterPassword(event.target.value)}
             />
             <button className="primary-button" onClick={() => void handleUnlock()} disabled={unlocking}>
-              {unlocking ? "Unlocking..." : "Unlock"}
+              {unlocking ? "解锁中..." : "解锁"}
             </button>
           </div>
         </section>
@@ -444,64 +562,92 @@ export default function App() {
           <aside className="card form-card">
             <div className="section-head">
               <div>
-                <span className="section-tag">Editor</span>
-                <h2>{editingId ? "Edit Entry" : "New Entry"}</h2>
+                <span className="section-tag">编辑区</span>
+                <h2>{editingId ? "编辑条目" : "新增条目"}</h2>
               </div>
-              {editingId && <span className="pill">Editing</span>}
+              {editingId && <span className="pill">编辑中</span>}
             </div>
 
             <div className="form-grid">
               <label className="field">
-                <span>Site</span>
+                <span>网站名称</span>
                 <input
-                  placeholder="e.g. Gmail"
+                  placeholder="例如：GitHub"
                   value={form.siteName}
                   onChange={(event) => setForm({ ...form, siteName: event.target.value })}
                 />
               </label>
 
               <label className="field">
-                <span>Username</span>
+                <span>用户名</span>
                 <input
-                  placeholder="e.g. john_doe"
+                  placeholder="例如：coder_neo"
                   value={form.username}
                   onChange={(event) => setForm({ ...form, username: event.target.value })}
                 />
               </label>
 
               <label className="field">
-                <span>Email</span>
+                <span>账号</span>
                 <input
-                  placeholder="e.g. example@email.com"
-                  value={form.email}
-                  onChange={(event) => setForm({ ...form, email: event.target.value })}
+                  placeholder="手机号 / 邮箱 / 工号"
+                  value={form.account}
+                  onChange={(event) => setForm({ ...form, account: event.target.value })}
                 />
               </label>
 
               <label className="field">
-                <span>Password</span>
+                <span>密码</span>
                 <input
                   type="password"
-                  placeholder="Account password"
+                  placeholder="输入登录密码"
                   value={form.password}
                   onChange={(event) => setForm({ ...form, password: event.target.value })}
                 />
               </label>
 
+              <label className="field">
+                <span>分类</span>
+                <select
+                  value={form.category}
+                  onChange={(event) => setForm({ ...form, category: event.target.value || DEFAULT_CATEGORY })}
+                >
+                  {categories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field">
+                <span>新建分类</span>
+                <div className="inline-row">
+                  <input
+                    placeholder="输入新分类名称"
+                    value={newCategoryName}
+                    onChange={(event) => setNewCategoryName(event.target.value)}
+                  />
+                  <button className="secondary-button compact-button" onClick={handleCreateCategory}>
+                    保存分类
+                  </button>
+                </div>
+              </label>
+
               <label className="field field-wide">
-                <span>Note</span>
+                <span>备注</span>
                 <textarea
-                  placeholder="Optional notes"
-                  value={form.note}
-                  onChange={(event) => setForm({ ...form, note: event.target.value })}
-                  rows={5}
+                  placeholder="可填写找回信息、地区限制等"
+                  value={form.remark}
+                  onChange={(event) => setForm({ ...form, remark: event.target.value })}
+                  rows={4}
                 />
               </label>
             </div>
 
             <div className="form-actions">
               <button className="primary-button" onClick={() => void handleSubmit()} disabled={loading}>
-                {editingId ? "Save Changes" : "Add Entry"}
+                {editingId ? "保存修改" : "添加条目"}
               </button>
               <button
                 className="secondary-button"
@@ -510,7 +656,7 @@ export default function App() {
                   setForm(emptyForm);
                 }}
               >
-                Clear
+                清空表单
               </button>
             </div>
           </aside>
@@ -518,69 +664,85 @@ export default function App() {
           <main className="card list-card">
             <div className="section-head list-head">
               <div>
-                <span className="section-tag">Entries</span>
-                <h2>Password List</h2>
+                <span className="section-tag">密码列表</span>
+                <h2>我的条目</h2>
               </div>
 
               <div className="badge-row">
-                <span className="pill">{filtered.length} items</span>
-                <span className="pill">Passwords masked</span>
+                <span className="pill">共 {filtered.length} 条</span>
+                <span className="pill">默认密码掩码</span>
               </div>
             </div>
 
             <div className="toolbar">
               <input
                 className="search-input"
-                placeholder="Search site / username / email / note"
+                placeholder="搜索网站 / 用户名 / 账号 / 分类 / 备注"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
               />
+
+              <div className="page-size-wrap">
+                <span>每页</span>
+                <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+                <span>条</span>
+              </div>
             </div>
 
-            {!key && records.length > 0 && <p className="status-text">Unlock to decrypt and view saved entries.</p>}
-            {loading && <p className="status-text">Loading entries...</p>}
+            {!key && records.length > 0 && <p className="status-text">请先解锁，才能查看已保存条目。</p>}
+            {loading && <p className="status-text">正在加载条目...</p>}
             {error && <p className="status-text status-error">{error}</p>}
             {warning && <p className="status-text status-warning">{warning}</p>}
             {successMessage && <p className="status-text status-success">{successMessage}</p>}
 
-            <div className="entry-list">
+            <div ref={entryListRef} className="entry-list">
               {!loading && filtered.length === 0 && (
                 <div className="empty-state">
-                  <h3>No entries yet</h3>
-                  <p>Create your first record from the form on the left.</p>
+                  <h3>还没有条目</h3>
+                  <p>先在左侧新增一条记录，这里会自动显示。</p>
                 </div>
               )}
 
-              {filtered.map((entry, index) => {
+              {pagedEntries.map((entry, index) => {
                 const isVisible = Boolean(visiblePasswords[entry.id]);
+                const globalIndex = (currentPage - 1) * pageSize + index + 1;
 
                 return (
                   <article
                     key={entry.id}
                     className="entry-card"
-                    style={{ animationDelay: `${Math.min(index * 70, 420)}ms` }}
+                    style={{ animationDelay: `${Math.min(index * 60, 360)}ms` }}
                   >
                     <div className="entry-title-row">
                       <div>
                         <h3>{entry.siteName}</h3>
-                        <p className="entry-meta">Updated {formatTimestamp(entry.updatedAt)}</p>
+                        <p className="entry-meta">更新于 {formatTimestamp(entry.updatedAt)}</p>
                       </div>
-                      <span className="entry-index">#{index + 1}</span>
+                      <div className="entry-head-right">
+                        <span className="category-pill">{entry.category}</span>
+                        <span className="entry-index">#{globalIndex}</span>
+                      </div>
                     </div>
 
                     <div className="entry-grid">
                       <div className="chip">
-                        <span>Username</span>
+                        <span>用户名</span>
                         <strong>{entry.username || "-"}</strong>
                       </div>
 
                       <div className="chip">
-                        <span>Email</span>
-                        <strong>{entry.email || "-"}</strong>
+                        <span>账号</span>
+                        <strong>{entry.account || "-"}</strong>
                       </div>
 
                       <div className="chip chip-wide">
-                        <span>Password</span>
+                        <span>密码</span>
                         <div className="password-row">
                           <code className="password-value">
                             {isVisible ? entry.password || "-" : maskPassword(entry.password)}
@@ -595,8 +757,8 @@ export default function App() {
                                   [entry.id]: !current[entry.id]
                                 }))
                               }
-                              title={isVisible ? "Hide password" : "Show password"}
-                              aria-label={isVisible ? "Hide password" : "Show password"}
+                              title={isVisible ? "隐藏密码" : "显示密码"}
+                              aria-label={isVisible ? "隐藏密码" : "显示密码"}
                             >
                               <EyeIcon open={isVisible} />
                             </button>
@@ -605,32 +767,57 @@ export default function App() {
                               className="mini-button"
                               onClick={() => void handleCopy(entry.password, entry.id)}
                               disabled={!entry.password}
-                              title="Copy password"
+                              title="复制密码"
                             >
                               <CopyIcon />
-                              <span>{copiedId === entry.id ? "Copied" : "Copy"}</span>
+                              <span>{copiedId === entry.id ? "已复制" : "复制"}</span>
                             </button>
                           </div>
                         </div>
                       </div>
 
                       <div className="chip chip-wide">
-                        <span>Note</span>
-                        <strong>{entry.note || "-"}</strong>
+                        <span>备注</span>
+                        <strong>{entry.remark || "-"}</strong>
                       </div>
                     </div>
 
                     <div className="entry-actions">
                       <button className="secondary-button" onClick={() => startEdit(entry)}>
-                        Edit
+                        编辑
                       </button>
                       <button className="danger-button" onClick={() => void handleDelete(entry.id)}>
-                        Delete
+                        删除
                       </button>
                     </div>
                   </article>
                 );
               })}
+            </div>
+
+            <div className="pagination-row">
+              <p className="page-summary">
+                显示 {pageStart}-{pageEnd} 条，共 {filtered.length} 条
+              </p>
+              <div className="pagination-actions">
+                <button
+                  className="secondary-button compact-button"
+                  onClick={() => setCurrentPage((current) => Math.max(1, current - 1))}
+                  disabled={currentPage <= 1}
+                >
+                  上一页
+                </button>
+                <span className="page-indicator">
+                  第 {currentPage} / {totalPages} 页
+                </span>
+                <button
+                  className="secondary-button compact-button"
+                  onClick={() => setCurrentPage((current) => Math.min(totalPages, current + 1))}
+                  disabled={currentPage >= totalPages}
+                >
+                  下一页
+                </button>
+              </div>
             </div>
           </main>
         </section>
