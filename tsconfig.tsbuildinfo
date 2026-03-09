@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/crypto.ts","./src/main.tsx","./src/types.ts","./src/utils.ts","./functions/api/db.ts","./functions/api/entries.ts","./functions/api/entry/[id].ts"],"version":"5.9.3"}
